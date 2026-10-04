@@ -1,0 +1,115 @@
+name: Build SleepGuard macOS Intel DMG
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-intel:
+    name: Build DMG (Intel x86_64)
+    # GitHub's current native Intel macOS runner.
+    # It is the supported x86_64 runner through August 2027.
+    runs-on: macos-15-intel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install minimal Qt 6 toolchain
+        shell: bash
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
+        run: |
+          set -euxo pipefail
+          uname -m
+          test "$(uname -m)" = "x86_64"
+
+          # Do not use the Qt meta-package and do not run `brew update`.
+          # The fresh GitHub runner already has a current Homebrew installation.
+          # These are the only Qt pieces this project needs.
+          brew install --force-bottle qtbase qtconnectivity qttools
+
+          QTBASE_PREFIX="$(brew --prefix qtbase)"
+          QTCONNECTIVITY_PREFIX="$(brew --prefix qtconnectivity)"
+          QTTOOLS_PREFIX="$(brew --prefix qttools)"
+
+          echo "QTBASE_PREFIX=$QTBASE_PREFIX" >> "$GITHUB_ENV"
+          echo "QTCONNECTIVITY_PREFIX=$QTCONNECTIVITY_PREFIX" >> "$GITHUB_ENV"
+          echo "QTTOOLS_PREFIX=$QTTOOLS_PREFIX" >> "$GITHUB_ENV"
+          echo "$QTBASE_PREFIX/bin" >> "$GITHUB_PATH"
+          echo "$QTTOOLS_PREFIX/bin" >> "$GITHUB_PATH"
+
+          echo "Qt base: $QTBASE_PREFIX"
+          echo "Qt connectivity: $QTCONNECTIVITY_PREFIX"
+          echo "Qt tools: $QTTOOLS_PREFIX"
+          ls -l "$QTTOOLS_PREFIX/bin/macdeployqt"
+
+      - name: Show toolchain
+        shell: bash
+        run: |
+          set -euxo pipefail
+          uname -m
+          sw_vers
+          cmake --version
+          clang++ --version
+          brew --version
+          qmake6 -v || true
+          macdeployqt -h | head -n 8
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euxo pipefail
+          CMAKE_PREFIX_PATH="$QTBASE_PREFIX;$QTCONNECTIVITY_PREFIX;$QTTOOLS_PREFIX"
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH" \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build build --config Release --parallel 3
+          file build/SleepGuard
+          lipo -info build/SleepGuard
+
+      - name: Create app and DMG
+        shell: bash
+        run: |
+          set -euxo pipefail
+          chmod +x deploy_macos.sh
+          MACDEPLOYQT="$QTTOOLS_PREFIX/bin/macdeployqt" ./deploy_macos.sh
+          test -d build/SleepGuard.app
+          test -f build/SleepGuard.dmg
+          mv build/SleepGuard.dmg build/SleepGuard-Intel-x86_64.dmg
+
+      - name: Verify DMG architecture
+        shell: bash
+        run: |
+          set -euxo pipefail
+          hdiutil attach build/SleepGuard-Intel-x86_64.dmg -nobrowse -readonly -mountpoint /tmp/sleepguard-dmg
+          file /tmp/sleepguard-dmg/SleepGuard.app/Contents/MacOS/SleepGuard
+          lipo -info /tmp/sleepguard-dmg/SleepGuard.app/Contents/MacOS/SleepGuard
+          test "$(file /tmp/sleepguard-dmg/SleepGuard.app/Contents/MacOS/SleepGuard)" = *x86_64*
+          hdiutil detach /tmp/sleepguard-dmg
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: SleepGuard-macOS-Intel-x86_64
+          path: build/SleepGuard-Intel-x86_64.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: SleepGuard-macOS-app-Intel-x86_64
+          path: build/SleepGuard.app
+          if-no-files-found: error
+          retention-days: 14
